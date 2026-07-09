@@ -1,0 +1,3 @@
+kernel,size,trials,avg_time_seconds
+scalar,64,3,0.000267270
+scalar,64,3,0.000281414

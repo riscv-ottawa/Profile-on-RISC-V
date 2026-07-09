@@ -1,8 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
-#define _POSIX_C_SOURCE 199309L 
 #include <time.h>
+#include <sys/stat.h>
 #include "../include/gemm.h"
+
 
 typedef void (*gemm_f32_fn)(
     const float *A,
@@ -29,6 +30,12 @@ static void zero_matrix(float *matrix, size_t elements) {
     for (size_t i = 0; i < elements; i++) {
         matrix[i] = 0.0f;
     }
+}
+
+static int file_is_empty(FILE *file) {
+    fseek(file, 0, SEEK_END);
+    long size = ftell(file);
+    return size == 0;
 }
 
 static void benchmark_gemm(
@@ -73,6 +80,27 @@ static void benchmark_gemm(
     }
 
     double avg_time = total_time / trials;
+
+    char filename[256];
+    snprintf(filename, sizeof(filename), "results/gemm/gemm_%zu.csv", size);
+
+    FILE *file = fopen(filename, "a+");
+    if (file == NULL) {
+        fprintf(stderr, "Could not open result file: %s\n", filename);
+        exit(1);
+    }
+
+    if (file_is_empty(file)) {
+        fprintf(file, "kernel,size,trials,avg_time_seconds\n");
+    }
+
+    fprintf(file, "%s,%zu,%d,%.9f\n",
+            kernel_name,
+            size,
+            trials,
+            avg_time);
+
+    fclose(file);
 
     printf("%s,%zu,%d,%.9f\n", kernel_name, size, trials, avg_time);
 

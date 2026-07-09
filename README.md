@@ -102,13 +102,6 @@ Where available, the analysis will include metrics such as:
 
 ---
 
-# Current Case Study
-
-This repository is designed to support multiple AI operator case studies following the profiling methodology described above.
-
-The current case study focuses on General Matrix Multiplication (GEMM). It serves as the foundation for developing and validating the profiling workflow before it is extended to additional AI operators.
----
-
 # Long-Term Vision
 
 The long-term objective is to build a collection of AI operator case studies that all follow the same profiling methodology.
