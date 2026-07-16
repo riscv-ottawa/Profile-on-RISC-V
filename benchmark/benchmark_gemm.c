@@ -109,15 +109,18 @@ static void benchmark_gemm(
     free(C);
 }
 
-int main(void) {
-    size_t sizes[] = {32, 64, 128, 256, 512};
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <matrix_size>\n", argv[0]);
+        return 1;
+    }
+
+    size_t size = (size_t)strtoull(argv[1], NULL, 10);
     int trials = 3;
 
     printf("kernel,size,trials,avg_time_seconds\n");
 
-    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
-        benchmark_gemm("scalar", gemm_scalar_f32, sizes[i], trials);
-    }
+    benchmark_gemm("scalar", gemm_scalar_f32, size, trials);
 
     return 0;
 }

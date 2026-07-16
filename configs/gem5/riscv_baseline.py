@@ -5,6 +5,13 @@ from gem5.components.cachehierarchies.classic.private_l1_private_l2_cache_hierar
     PrivateL1PrivateL2CacheHierarchy,
 )
 from gem5.components.memory.single_channel import SingleChannelDDR3_1600
+from gem5.resources.resource import BinaryResource
+from gem5.simulate.simulator import Simulator
+from gem5.components.boards.simple_board import SimpleBoard
+import sys
+
+size=sys.argv[1]
+
 
 processor = SimpleProcessor(
     cpu_type=CPUTypes.TIMING,
@@ -22,5 +29,25 @@ cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
 memory = SingleChannelDDR3_1600(
     size="1GiB"
 )
+
+board = SimpleBoard(
+    clk_freq="1GHz",
+    processor=processor,
+    memory=memory,
+    cache_hierarchy=cache_hierarchy,
+)
+
+binary = BinaryResource(
+    local_path="build/gemm_scalar_riscv",
+)
+
+board.set_se_binary_workload(
+    binary=binary,
+    arguments=[size],
+)
+
+simulator = Simulator(board=board)
+
+simulator.run()
 
 print("gem5 import successful")
