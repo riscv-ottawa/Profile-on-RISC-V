@@ -1,2 +1,0 @@
-operator,implementation,size,sim_seconds,sim_ticks,cycles,instructions,operations,ipc,l1i_hits,l1i_misses,l1d_hits,l1d_misses,l1d_accesses,l1d_miss_rate,l2_hits,l2_misses
-gemm,scalar,32,0.000274000,273992000.000000000,273992.000000000,206173.000000000,206173.000000000,0.752478175,207296.000000000,2.000000000,66562.000000000,,66562.000000000,,,2.000000000
