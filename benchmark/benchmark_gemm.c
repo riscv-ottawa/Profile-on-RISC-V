@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <gem5/m5ops.h>
+
 #include "../include/gemm.h"
 
 
@@ -14,11 +16,16 @@ typedef void (*gemm_f32_fn)(
     size_t K
 );
 
+
 static double now_seconds(void) {
     struct timespec ts;
+
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+
+    return (double)ts.tv_sec
+         + (double)ts.tv_nsec * 1e-9;
 }
+
 
 static void fill_matrix(float *matrix, size_t elements) {
     for (size_t i = 0; i < elements; i++) {
@@ -26,17 +33,24 @@ static void fill_matrix(float *matrix, size_t elements) {
     }
 }
 
+
 static void zero_matrix(float *matrix, size_t elements) {
     for (size_t i = 0; i < elements; i++) {
         matrix[i] = 0.0f;
     }
 }
 
+
 static int file_is_empty(FILE *file) {
-    fseek(file, 0, SEEK_END);
+    if (fseek(file, 0, SEEK_END) != 0) {
+        return 1;
+    }
+
     long size = ftell(file);
-    return size == 0;
+
+    return size <= 0;
 }
+
 
 static void benchmark_gemm(
     const char *kernel_name,
@@ -57,23 +71,53 @@ static void benchmark_gemm(
     float *C = malloc(c_elements * sizeof(float));
 
     if (A == NULL || B == NULL || C == NULL) {
-        fprintf(stderr, "Allocation failed for size %zu\n", size);
+        fprintf(
+            stderr,
+            "Allocation failed for size %zu\n",
+            size
+        );
+
         free(A);
         free(B);
         free(C);
-        exit(1);
+
+        exit(EXIT_FAILURE);
     }
 
+    /*
+     * These operations happen before the ROI.
+     * Their instructions and cache activity will not be included
+     * after gem5 resets its statistics at WORKBEGIN.
+     */
     fill_matrix(A, a_elements);
     fill_matrix(B, b_elements);
 
     double total_time = 0.0;
 
     for (int t = 0; t < trials; t++) {
+        /*
+         * Clear C before starting the ROI, because we want to profile
+         * GEMM rather than matrix initialization.
+         */
         zero_matrix(C, c_elements);
 
         double start = now_seconds();
+
+        /*
+         * Begin the gem5 Region of Interest.
+         *
+         * work_id  = 0
+         * thread_id = 0
+         */
+        m5_work_begin(0, 0);
+
         kernel(A, B, C, M, N, K);
+
+        /*
+         * End the gem5 Region of Interest.
+         */
+        m5_work_end(0, 0);
+
         double end = now_seconds();
 
         total_time += end - start;
@@ -82,45 +126,109 @@ static void benchmark_gemm(
     double avg_time = total_time / trials;
 
     char filename[256];
-    snprintf(filename, sizeof(filename), "results/gemm/gemm_%zu.csv", size);
+
+    snprintf(
+        filename,
+        sizeof(filename),
+        "results/gemm/gemm_%zu.csv",
+        size
+    );
 
     FILE *file = fopen(filename, "a+");
+
     if (file == NULL) {
-        fprintf(stderr, "Could not open result file: %s\n", filename);
-        exit(1);
+        fprintf(
+            stderr,
+            "Could not open result file: %s\n",
+            filename
+        );
+
+        free(A);
+        free(B);
+        free(C);
+
+        exit(EXIT_FAILURE);
     }
 
     if (file_is_empty(file)) {
-        fprintf(file, "kernel,size,trials,avg_time_seconds\n");
+        fprintf(
+            file,
+            "kernel,size,trials,avg_time_seconds\n"
+        );
     }
 
-    fprintf(file, "%s,%zu,%d,%.9f\n",
-            kernel_name,
-            size,
-            trials,
-            avg_time);
+    fprintf(
+        file,
+        "%s,%zu,%d,%.9f\n",
+        kernel_name,
+        size,
+        trials,
+        avg_time
+    );
 
     fclose(file);
 
-    printf("%s,%zu,%d,%.9f\n", kernel_name, size, trials, avg_time);
+    printf(
+        "%s,%zu,%d,%.9f\n",
+        kernel_name,
+        size,
+        trials,
+        avg_time
+    );
 
     free(A);
     free(B);
     free(C);
 }
 
+
 int main(int argc, char *argv[]) {
     if (argc != 2) {
-        fprintf(stderr, "Usage: %s <matrix_size>\n", argv[0]);
-        return 1;
+        fprintf(
+            stderr,
+            "Usage: %s <matrix_size>\n",
+            argv[0]
+        );
+
+        return EXIT_FAILURE;
     }
 
-    size_t size = (size_t)strtoull(argv[1], NULL, 10);
-    int trials = 3;
+    char *end = NULL;
+    unsigned long long parsed_size = strtoull(
+        argv[1],
+        &end,
+        10
+    );
+
+    if (
+        end == argv[1]
+        || *end != '\0'
+        || parsed_size == 0
+    ) {
+        fprintf(
+            stderr,
+            "Invalid matrix size: %s\n",
+            argv[1]
+        );
+
+        return EXIT_FAILURE;
+    }
+
+    size_t size = (size_t)parsed_size;
+
+    /*
+     * Use one trial while validating ROI handling.
+     */
+    int trials = 1;
 
     printf("kernel,size,trials,avg_time_seconds\n");
 
-    benchmark_gemm("scalar", gemm_scalar_f32, size, trials);
+    benchmark_gemm(
+        "scalar",
+        gemm_scalar_f32,
+        size,
+        trials
+    );
 
-    return 0;
+    return EXIT_SUCCESS;
 }

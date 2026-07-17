@@ -7,18 +7,47 @@ from pathlib import Path
 from typing import Optional
 
 
+FIELDNAMES = [
+    "operator",
+    "implementation",
+    "size",
+    "sim_seconds",
+    "sim_ticks",
+    "cycles",
+    "instructions",
+    "operations",
+    "ipc",
+    "l1i_hits",
+    "l1i_misses",
+    "l1d_hits",
+    "l1d_misses",
+    "l1d_accesses",
+    "l1d_miss_rate",
+    "l2_hits",
+    "l2_misses",
+]
+
+
 def read_stats(stats_path: Path) -> dict[str, float]:
-    """Read numeric statistics from a gem5 stats.txt file."""
+    """
+    Read numeric statistics from a gem5 stats.txt file.
+
+    Each valid gem5 statistic normally follows this structure:
+
+        statistic_name value # optional description
+
+    Non-numeric values and separator lines are ignored.
+    """
     stats: dict[str, float] = {}
 
-    with stats_path.open("r", encoding="utf-8") as file:
-        for line in file:
+    with stats_path.open("r", encoding="utf-8") as stats_file:
+        for line in stats_file:
             line = line.strip()
 
             if (
                 not line
-                or line.startswith("-")
                 or line.startswith("#")
+                or line.startswith("-")
             ):
                 continue
 
@@ -28,9 +57,10 @@ def read_stats(stats_path: Path) -> dict[str, float]:
                 continue
 
             name = parts[0]
+            value_text = parts[1]
 
             try:
-                value = float(parts[1])
+                value = float(value_text)
             except ValueError:
                 continue
 
@@ -41,17 +71,18 @@ def read_stats(stats_path: Path) -> dict[str, float]:
 
 def find_stat(
     stats: dict[str, float],
-    exact_name: Optional[str] = None,
+    exact_names: tuple[str, ...] = (),
     suffixes: tuple[str, ...] = (),
 ) -> Optional[float]:
     """
-    Find a statistic by its exact name or by a suffix.
+    Find one gem5 statistic.
 
-    Suffix matching makes the parser less dependent on the complete
-    gem5 object path.
+    Exact names are checked first. Suffix matching is then used because
+    the complete gem5 object path can vary between configurations.
     """
-    if exact_name is not None and exact_name in stats:
-        return stats[exact_name]
+    for name in exact_names:
+        if name in stats:
+            return stats[name]
 
     for suffix in suffixes:
         for name, value in stats.items():
@@ -65,27 +96,160 @@ def safe_ratio(
     numerator: Optional[float],
     denominator: Optional[float],
 ) -> Optional[float]:
-    if numerator is None or denominator in (None, 0):
+    """Return numerator / denominator when both values are valid."""
+    if numerator is None:
+        return None
+
+    if denominator is None or denominator == 0:
         return None
 
     return numerator / denominator
 
 
 def format_value(value: Optional[float]) -> str:
+    """Convert a metric to a consistent CSV representation."""
     if value is None:
         return ""
 
     return f"{value:.9f}"
 
 
+def read_existing_rows(
+    output_path: Path,
+) -> list[dict[str, str]]:
+    """Read rows already present in the unified CSV file."""
+    if not output_path.is_file():
+        return []
+
+    if output_path.stat().st_size == 0:
+        return []
+
+    with output_path.open(
+        "r",
+        newline="",
+        encoding="utf-8",
+    ) as csv_file:
+        reader = csv.DictReader(csv_file)
+
+        if reader.fieldnames != FIELDNAMES:
+            raise SystemExit(
+                f"Unexpected CSV columns in {output_path}.\n"
+                "Move or delete the old CSV before using this parser."
+            )
+
+        return list(reader)
+
+
+def write_unified_csv(
+    output_path: Path,
+    new_row: dict[str, str | int],
+) -> None:
+    """
+    Add one experiment to the unified CSV.
+
+    If the same operator, implementation, and matrix size already exist,
+    the old row is replaced rather than duplicated.
+    """
+    existing_rows = read_existing_rows(output_path)
+
+    filtered_rows = [
+        existing_row
+        for existing_row in existing_rows
+        if not (
+            existing_row.get("operator") == str(new_row["operator"])
+            and existing_row.get("implementation")
+            == str(new_row["implementation"])
+            and existing_row.get("size") == str(new_row["size"])
+        )
+    ]
+
+    normalized_new_row = {
+        field: str(new_row.get(field, ""))
+        for field in FIELDNAMES
+    }
+
+    filtered_rows.append(normalized_new_row)
+
+    filtered_rows.sort(
+        key=lambda row: (
+            row.get("operator", ""),
+            row.get("implementation", ""),
+            int(row["size"]),
+        )
+    )
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    with output_path.open(
+        "w",
+        newline="",
+        encoding="utf-8",
+    ) as csv_file:
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=FIELDNAMES,
+        )
+
+        writer.writeheader()
+        writer.writerows(filtered_rows)
+
+
+def preserve_raw_output(
+    stats_path: Path,
+    size: int,
+    implementation: str,
+) -> Path:
+    """
+    Preserve stats.txt and gem5 configuration files for reproducibility.
+    """
+    raw_result_dir = (
+        Path("results")
+        / "gemm"
+        / "raw"
+        / str(size)
+        / implementation
+    )
+
+    raw_result_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    shutil.copy2(
+        stats_path,
+        raw_result_dir / "stats.txt",
+    )
+
+    for filename in (
+        "config.ini",
+        "config.json",
+    ):
+        source_path = stats_path.parent / filename
+
+        if source_path.is_file():
+            shutil.copy2(
+                source_path,
+                raw_result_dir / filename,
+            )
+
+    return raw_result_dir
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Extract selected GEMM metrics from gem5 stats.txt."
+        description=(
+            "Extract selected kernel metrics from gem5 stats.txt "
+            "and store them in one unified CSV."
+        )
     )
 
     parser.add_argument(
         "--stats",
-        default="m5out/stats.txt",
+        type=Path,
+        default=Path("m5out/stats.txt"),
         help="Path to gem5 stats.txt.",
     )
 
@@ -104,31 +268,71 @@ def main() -> None:
 
     parser.add_argument(
         "--output",
-        help="Output CSV path. Defaults to results/gemm/gemm_<size>.csv.",
+        type=Path,
+        default=Path("results/gemm/gemm_scalar.csv"),
+        help="Path to the unified output CSV.",
     )
 
     args = parser.parse_args()
 
     if args.size <= 0:
-        raise SystemExit("Matrix size must be greater than zero.")
+        raise SystemExit(
+            "Matrix size must be greater than zero."
+        )
 
-    stats_path = Path(args.stats)
+    if not args.stats.is_file():
+        raise SystemExit(
+            f"Stats file not found: {args.stats}"
+        )
 
-    if not stats_path.is_file():
-        raise SystemExit(f"Stats file not found: {stats_path}")
+    stats = read_stats(args.stats)
 
-    stats = read_stats(stats_path)
+    if not stats:
+        raise SystemExit(
+            f"No numeric gem5 statistics found in {args.stats}"
+        )
 
-    sim_seconds = find_stat(stats, exact_name="simSeconds")
-    sim_ticks = find_stat(stats, exact_name="simTicks")
-    sim_insts = find_stat(stats, exact_name="simInsts")
-    sim_ops = find_stat(stats, exact_name="simOps")
+    sim_seconds = find_stat(
+        stats,
+        exact_names=("simSeconds",),
+    )
+
+    sim_ticks = find_stat(
+        stats,
+        exact_names=("simTicks",),
+    )
+
+    instructions = find_stat(
+        stats,
+        exact_names=("simInsts",),
+    )
+
+    operations = find_stat(
+        stats,
+        exact_names=("simOps",),
+    )
 
     cycles = find_stat(
         stats,
         suffixes=(
             ".numCycles",
             ".num_cycles",
+        ),
+    )
+
+    l1i_hits = find_stat(
+        stats,
+        suffixes=(
+            "l1i-cache-0.demandHits::total",
+            "l1i-cache-0.overallHits::total",
+        ),
+    )
+
+    l1i_misses = find_stat(
+        stats,
+        suffixes=(
+            "l1i-cache-0.demandMisses::total",
+            "l1i-cache-0.overallMisses::total",
         ),
     )
 
@@ -156,22 +360,6 @@ def main() -> None:
         ),
     )
 
-    l1i_hits = find_stat(
-        stats,
-        suffixes=(
-            "l1i-cache-0.demandHits::total",
-            "l1i-cache-0.overallHits::total",
-        ),
-    )
-
-    l1i_misses = find_stat(
-        stats,
-        suffixes=(
-            "l1i-cache-0.demandMisses::total",
-            "l1i-cache-0.overallMisses::total",
-        ),
-    )
-
     l2_hits = find_stat(
         stats,
         suffixes=(
@@ -188,46 +376,33 @@ def main() -> None:
         ),
     )
 
-    ipc = safe_ratio(sim_insts, cycles)
-    l1d_miss_rate = safe_ratio(l1d_misses, l1d_accesses)
-
-    output_path = (
-        Path(args.output)
-        if args.output
-        else Path(f"results/gemm/gemm_{args.size}.csv")
+    ipc = safe_ratio(
+        instructions,
+        cycles,
     )
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Some gem5 statistics are omitted when their value is zero.
+    # If accesses and hits exist, derive the miss count.
+    if (
+        l1d_misses is None
+        and l1d_accesses is not None
+        and l1d_hits is not None
+    ):l1d_misses = l1d_accesses - l1d_hits
 
-    fieldnames = [
-        "operator",
-        "implementation",
-        "size",
-        "sim_seconds",
-        "sim_ticks",
-        "cycles",
-        "instructions",
-        "operations",
-        "ipc",
-        "l1i_hits",
-        "l1i_misses",
-        "l1d_hits",
-        "l1d_misses",
-        "l1d_accesses",
-        "l1d_miss_rate",
-        "l2_hits",
-        "l2_misses",
-    ]
+    l1d_miss_rate = safe_ratio(
+        l1d_misses,
+        l1d_accesses,
+    )
 
-    row = {
+    row: dict[str, str | int] = {
         "operator": "gemm",
         "implementation": args.implementation,
         "size": args.size,
         "sim_seconds": format_value(sim_seconds),
         "sim_ticks": format_value(sim_ticks),
         "cycles": format_value(cycles),
-        "instructions": format_value(sim_insts),
-        "operations": format_value(sim_ops),
+        "instructions": format_value(instructions),
+        "operations": format_value(operations),
         "ipc": format_value(ipc),
         "l1i_hits": format_value(l1i_hits),
         "l1i_misses": format_value(l1i_misses),
@@ -239,35 +414,26 @@ def main() -> None:
         "l2_misses": format_value(l2_misses),
     }
 
-    file_exists = output_path.exists()
-    file_is_empty = not file_exists or output_path.stat().st_size == 0
-
-    with output_path.open("a", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-
-        if file_is_empty:
-            writer.writeheader()
-
-        writer.writerow(row)
-
-    raw_result_dir = Path(
-        f"results/gemm/raw/{args.size}/{args.implementation}"
-    )
-    raw_result_dir.mkdir(parents=True, exist_ok=True)
-
-    shutil.copy2(
-        stats_path,
-        raw_result_dir / "stats.txt",
+    write_unified_csv(
+        args.output,
+        row,
     )
 
-    for filename in ("config.ini", "config.json"):
-        source = stats_path.parent / filename
+    raw_result_dir = preserve_raw_output(
+        args.stats,
+        args.size,
+        args.implementation,
+    )
 
-        if source.is_file():
-            shutil.copy2(source, raw_result_dir / filename)
-
-    print(f"Metrics saved to {output_path}")
-    print(f"Raw gem5 output saved to {raw_result_dir}")
+    print(
+        f"Metrics saved to: {args.output}"
+    )
+    print(
+        f"Raw gem5 output saved to: {raw_result_dir}"
+    )
+    print(
+        f"Recorded GEMM size: {args.size} x {args.size}"
+    )
 
 
 if __name__ == "__main__":
