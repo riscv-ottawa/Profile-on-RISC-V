@@ -10,6 +10,21 @@ from gem5.simulate.simulator import Simulator
 from gem5.components.boards.simple_board import SimpleBoard
 import sys
 
+import m5
+
+from gem5.simulate.exit_event import ExitEvent
+
+def handle_roi_begin():
+    print("ROI begin: resetting gem5 statistics")
+    m5.stats.reset()
+    yield False
+
+
+def handle_roi_end():
+    print("ROI end: dumping statistics and stopping simulation")
+    m5.stats.dump()
+    yield True
+
 size=sys.argv[1]
 
 
@@ -46,7 +61,13 @@ board.set_se_binary_workload(
     arguments=[size],
 )
 
-simulator = Simulator(board=board)
+simulator = Simulator(
+    board=board,
+    on_exit_event={
+        ExitEvent.WORKBEGIN: handle_roi_begin(),
+        ExitEvent.WORKEND: handle_roi_end(),
+    },
+)
 
 simulator.run()
 
