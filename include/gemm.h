@@ -12,4 +12,13 @@ void gemm_scalar_f32(
     size_t K
 );
 
+void gemm_rvv_f32(
+    const float *A,
+    const float *B,
+    float *C,
+    size_t M,
+    size_t N,
+    size_t K
+);
+
 #endif

@@ -268,7 +268,7 @@ fontsize=14;
 label="workload \n: Process";
 shape=box;
 style="rounded, filled";
-tooltip="cmd&#61;build/gemm_scalar_riscv 32&#10;\cwd&#61;/mnt/c/AllCodingProjects/Personal project/AI_workload_profiler_RVV&#10;\drivers&#61;&#10;\egid&#61;100&#10;\env&#61;&#10;\errout&#61;cerr&#10;\euid&#61;100&#10;\eventq_index&#61;0&#10;\executable&#61;build/gemm_scalar_riscv&#10;\gid&#61;100&#10;\input&#61;cin&#10;\kvmInSE&#61;false&#10;\maxStackSize&#61;67108864&#10;\output&#61;cout&#10;\pgid&#61;100&#10;\pid&#61;100&#10;\ppid&#61;0&#10;\release&#61;5.1.0&#10;\simpoint&#61;0&#10;\system&#61;board&#10;\uid&#61;100&#10;\useArchPT&#61;false&#10;\zeroPages&#61;true";
+tooltip="cmd&#61;build/test_gemm_rvv&#10;\cwd&#61;/mnt/c/AllCodingProjects/Personal project/AI_workload_profiler_RVV&#10;\drivers&#61;&#10;\egid&#61;100&#10;\env&#61;&#10;\errout&#61;cerr&#10;\euid&#61;100&#10;\eventq_index&#61;0&#10;\executable&#61;build/test_gemm_rvv&#10;\gid&#61;100&#10;\input&#61;cin&#10;\kvmInSE&#61;false&#10;\maxStackSize&#61;67108864&#10;\output&#61;cout&#10;\pgid&#61;100&#10;\pid&#61;100&#10;\ppid&#61;0&#10;\release&#61;5.1.0&#10;\simpoint&#61;0&#10;\system&#61;board&#10;\uid&#61;100&#10;\useArchPT&#61;false&#10;\zeroPages&#61;true";
 }
 
 subgraph cluster_board_processor_cores_core_interrupts {

@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <gem5/m5ops.h>
 
@@ -183,11 +184,31 @@ static void benchmark_gemm(
 
 
 int main(int argc, char *argv[]) {
-    if (argc != 2) {
+    if (argc != 3) {
         fprintf(
             stderr,
-            "Usage: %s <matrix_size>\n",
+            "Usage: %s <kernel> <matrix_size>\n",
             argv[0]
+        );
+
+        return EXIT_FAILURE;
+    }
+
+    const char *kernel_name = argv[1];
+    gemm_f32_fn kernel = NULL;
+
+    if (strcmp(kernel_name, "scalar") == 0) {
+        kernel = gemm_scalar_f32;
+    }
+    else if (strcmp(kernel_name, "rvv") == 0) {
+        kernel = gemm_rvv_f32;
+    }
+    else {
+        fprintf(
+            stderr,
+            "Unknown kernel: %s\n"
+            "Available kernels: scalar, rvv\n",
+            kernel_name
         );
 
         return EXIT_FAILURE;
@@ -195,22 +216,21 @@ int main(int argc, char *argv[]) {
 
     char *end = NULL;
     unsigned long long parsed_size = strtoull(
-        argv[1],
+        argv[2],
         &end,
         10
     );
 
     if (
-        end == argv[1]
+        end == argv[2]
         || *end != '\0'
         || parsed_size == 0
     ) {
         fprintf(
-            stderr,
-            "Invalid matrix size: %s\n",
-            argv[1]
-        );
-
+        stderr,
+        "Invalid matrix size: %s\n",
+        argv[2]
+    );
         return EXIT_FAILURE;
     }
 
@@ -224,8 +244,8 @@ int main(int argc, char *argv[]) {
     printf("kernel,size,trials,avg_time_seconds\n");
 
     benchmark_gemm(
-        "scalar",
-        gemm_scalar_f32,
+        kernel_name,
+        kernel,
         size,
         trials
     );
