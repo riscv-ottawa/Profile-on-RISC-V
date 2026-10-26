@@ -1,5 +1,9 @@
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <stdint.h>
+#include <errno.h>
 #include <time.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -53,19 +57,105 @@ static int file_is_empty(FILE *file) {
 }
 
 
+/*
+ * Parse a strictly positive matrix dimension.
+ */
+static size_t parse_dimension(const char *text) {
+    if (
+        text == NULL
+        || text[0] == '\0'
+        || text[0] == '-'
+    ) {
+        fprintf(
+            stderr,
+            "Invalid matrix dimension: %s\n",
+            text ? text : "(null)"
+        );
+
+        exit(EXIT_FAILURE);
+    }
+
+    char *end = NULL;
+
+    errno = 0;
+
+    unsigned long long value = strtoull(
+        text,
+        &end,
+        10
+    );
+
+    if (
+        errno == ERANGE
+        || end == text
+        || *end != '\0'
+        || value == 0
+        || value > SIZE_MAX
+    ) {
+        fprintf(
+            stderr,
+            "Invalid matrix dimension: %s\n",
+            text
+        );
+
+        exit(EXIT_FAILURE);
+    }
+
+    return (size_t)value;
+}
+
+
+/*
+ * Check multiplication before allocating memory.
+ * Returns the number of float elements.
+ */
+static size_t checked_elements(
+    size_t rows,
+    size_t columns
+) {
+    if (
+        rows > SIZE_MAX / columns
+    ) {
+        fprintf(
+            stderr,
+            "Matrix dimension overflow: %zu x %zu\n",
+            rows,
+            columns
+        );
+
+        exit(EXIT_FAILURE);
+    }
+
+    size_t elements = rows * columns;
+
+    if (
+        elements > SIZE_MAX / sizeof(float)
+    ) {
+        fprintf(
+            stderr,
+            "Matrix allocation size overflow: %zu x %zu\n",
+            rows,
+            columns
+        );
+
+        exit(EXIT_FAILURE);
+    }
+
+    return elements;
+}
+
+
 static void benchmark_gemm(
     const char *kernel_name,
     gemm_f32_fn kernel,
-    size_t size,
+    size_t M,
+    size_t N,
+    size_t K,
     int trials
 ) {
-    size_t M = size;
-    size_t N = size;
-    size_t K = size;
-
-    size_t a_elements = M * K;
-    size_t b_elements = K * N;
-    size_t c_elements = M * N;
+    size_t a_elements = checked_elements(M, K);
+    size_t b_elements = checked_elements(K, N);
+    size_t c_elements = checked_elements(M, N);
 
     float *A = malloc(a_elements * sizeof(float));
     float *B = malloc(b_elements * sizeof(float));
@@ -74,8 +164,10 @@ static void benchmark_gemm(
     if (A == NULL || B == NULL || C == NULL) {
         fprintf(
             stderr,
-            "Allocation failed for size %zu\n",
-            size
+            "Allocation failed for GEMM M=%zu, N=%zu, K=%zu\n",
+            M,
+            N,
+            K
         );
 
         free(A);
@@ -107,7 +199,7 @@ static void benchmark_gemm(
         /*
          * Begin the gem5 Region of Interest.
          *
-         * work_id  = 0
+         * work_id   = 0
          * thread_id = 0
          */
         m5_work_begin(0, 0);
@@ -131,8 +223,10 @@ static void benchmark_gemm(
     snprintf(
         filename,
         sizeof(filename),
-        "results/gemm/gemm_%zu.csv",
-        size
+        "results/gemm/gemm_%zux%zux%zu.csv",
+        M,
+        N,
+        K
     );
 
     FILE *file = fopen(filename, "a+");
@@ -154,15 +248,17 @@ static void benchmark_gemm(
     if (file_is_empty(file)) {
         fprintf(
             file,
-            "kernel,size,trials,avg_time_seconds\n"
+            "kernel,M,N,K,trials,avg_time_seconds\n"
         );
     }
 
     fprintf(
         file,
-        "%s,%zu,%d,%.9f\n",
+        "%s,%zu,%zu,%zu,%d,%.9f\n",
         kernel_name,
-        size,
+        M,
+        N,
+        K,
         trials,
         avg_time
     );
@@ -170,9 +266,11 @@ static void benchmark_gemm(
     fclose(file);
 
     printf(
-        "%s,%zu,%d,%.9f\n",
+        "%s,%zu,%zu,%zu,%d,%.9f\n",
         kernel_name,
-        size,
+        M,
+        N,
+        K,
         trials,
         avg_time
     );
@@ -184,10 +282,13 @@ static void benchmark_gemm(
 
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
+    if (argc != 3 && argc != 5) {
         fprintf(
             stderr,
-            "Usage: %s <kernel> <matrix_size>\n",
+            "Usage:\n"
+            "  %s <kernel> <size>\n"
+            "  %s <kernel> <M> <N> <K>\n",
+            argv[0],
             argv[0]
         );
 
@@ -214,39 +315,46 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    char *end = NULL;
-    unsigned long long parsed_size = strtoull(
-        argv[2],
-        &end,
-        10
-    );
+    size_t M;
+    size_t N;
+    size_t K;
 
-    if (
-        end == argv[2]
-        || *end != '\0'
-        || parsed_size == 0
-    ) {
-        fprintf(
-        stderr,
-        "Invalid matrix size: %s\n",
-        argv[2]
-    );
-        return EXIT_FAILURE;
+    if (argc == 3) {
+        /*
+         * Backward-compatible square GEMM:
+         * <kernel> <size>
+         */
+        size_t size = parse_dimension(argv[2]);
+
+        M = size;
+        N = size;
+        K = size;
     }
-
-    size_t size = (size_t)parsed_size;
+    else {
+        /*
+         * Rectangular GEMM:
+         * <kernel> <M> <N> <K>
+         */
+        M = parse_dimension(argv[2]);
+        N = parse_dimension(argv[3]);
+        K = parse_dimension(argv[4]);
+    }
 
     /*
      * Use one trial while validating ROI handling.
      */
     int trials = 1;
 
-    printf("kernel,size,trials,avg_time_seconds\n");
+    printf(
+        "kernel,M,N,K,trials,avg_time_seconds\n"
+    );
 
     benchmark_gemm(
         kernel_name,
         kernel,
-        size,
+        M,
+        N,
+        K,
         trials
     );
 

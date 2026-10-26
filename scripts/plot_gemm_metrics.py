@@ -1,396 +1,123 @@
-
 #!/usr/bin/env python3
-
+"""Plot gem5 GEMM metrics for square scaling or fixed-N,K rectangular scaling."""
 import argparse
 import csv
-import math
 from pathlib import Path
 
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+HARDWARE_CONFIGS = {
+    'baseline': {'label': '1 core, 32 KiB L1D, 256 KiB L2', 'color': 'tab:blue'},
+}
+LINE_STYLES = {'scalar': ':', 'rvv': '-'}
 METRICS = [
-    {
-        "column": "sim_seconds",
-        "title": "Simulated execution time",
-        "ylabel": "Time (seconds)",
-        "scale": 1.0,
-    },
-    {
-        "column": "instructions",
-        "title": "Instruction count",
-        "ylabel": "Instructions",
-        "scale": 1.0,
-    },
-    {
-        "column": "operations",
-        "title": "Operation count",
-        "ylabel": "Operations",
-        "scale": 1.0,
-    },
-    {
-        "column": "cycles",
-        "title": "Cycle count",
-        "ylabel": "Cycles",
-        "scale": 1.0,
-    },
-    {
-        "column": "ipc",
-        "title": "Instructions per cycle",
-        "ylabel": "IPC",
-        "scale": 1.0,
-    },
-    {
-        "column": "l1i_misses",
-        "title": "L1 instruction-cache misses",
-        "ylabel": "Misses",
-        "scale": 1.0,
-    },
-    {
-        "column": "l1d_misses",
-        "title": "L1 data-cache misses",
-        "ylabel": "Misses",
-        "scale": 1.0,
-    },
-    {
-        "column": "l1d_miss_rate",
-        "title": "L1 data-cache miss rate",
-        "ylabel": "Miss rate (%)",
-        "scale": 100.0,
-    },
-    {
-        "column": "l2_misses",
-        "title": "L2 cache misses",
-        "ylabel": "Misses",
-        "scale": 1.0,
-    },
+    ('sim_seconds', 'Simulated execution time', 'Seconds'),
+    ('instructions', 'Instructions', 'Count'),
+    ('operations', 'gem5 simulated operations (simOps)', 'Count'),
+    ('cycles', 'CPU cycles', 'Cycles'),
+    ('ipc', 'Instructions per cycle', 'IPC'),
+    ('l1i_misses', 'L1 instruction-cache misses', 'Misses'),
+    ('l1d_misses', 'L1 data-cache misses', 'Misses'),
+    ('l1d_miss_rate', 'L1 data-cache miss rate', 'Fraction'),
+    ('l2_misses', 'L2 cache misses', 'Misses'),
 ]
 
 
-# Color represents the simulated hardware configuration.
-# Additional configurations can be added here later.
-HARDWARE_CONFIGS = {
-    "baseline": {
-        "label": "1 core, 32 KiB L1D, 256 KiB L2",
-        "color": "tab:blue",
-    },
-}
-
-
-# Line style represents the GEMM implementation.
-LINE_STYLES = {
-    "scalar": ":",
-    "rvv": "-",
-}
-
-
-def parse_float(
-    value: str,
-    column: str,
-    size: int,
-) -> float:
-    """
-    Convert a CSV value to float and report missing or invalid data.
-    """
-    if value is None or value.strip() == "":
-        raise ValueError(
-            f"Missing value for '{column}' at matrix size {size}."
-        )
-
-    try:
-        return float(value)
-    except ValueError as error:
-        raise ValueError(
-            f"Invalid numeric value for '{column}' "
-            f"at matrix size {size}: {value}"
-        ) from error
-
-
-def load_results(
-    csv_path: Path,
-    implementation: str,
-) -> list[dict[str, str]]:
-    """
-    Read and sort GEMM results for one implementation.
-    """
-    if not csv_path.is_file():
-        raise FileNotFoundError(
-            f"CSV file not found: {csv_path}"
-        )
-
-    with csv_path.open(
-        "r",
-        newline="",
-        encoding="utf-8",
-    ) as csv_file:
-        reader = csv.DictReader(csv_file)
-
-        if reader.fieldnames is None:
-            raise ValueError(
-                f"CSV file has no header: {csv_path}"
-            )
-
-        required_columns = {
-            "operator",
-            "implementation",
-            "size",
-        }
-
-        required_columns.update(
-            metric["column"]
-            for metric in METRICS
-        )
-
-        missing_columns = (
-            required_columns - set(reader.fieldnames)
-        )
-
-        if missing_columns:
-            missing_text = ", ".join(
-                sorted(missing_columns)
-            )
-
-            raise ValueError(
-                f"CSV is missing required columns: {missing_text}"
-            )
-
-        rows = [
-            row
-            for row in reader
-            if (
-                row.get("operator") == "gemm"
-                and row.get("implementation") == implementation
-            )
-        ]
-
-    if not rows:
-        raise ValueError(
-            "No matching GEMM rows were found for "
-            f"implementation '{implementation}' "
-            f"in {csv_path}."
-        )
-
-    try:
-        rows.sort(
-            key=lambda row: int(row["size"])
-        )
-    except ValueError as error:
-        raise ValueError(
-            "Every matrix size must be an integer."
-        ) from error
-
+def load_rows(path: Path, implementation: str):
+    if not path.is_file():
+        raise SystemExit(f'CSV file not found: {path}')
+    with path.open(newline='', encoding='utf-8') as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise SystemExit(f'CSV is empty: {path}')
+        rows = []
+        for row in reader:
+            if row.get('implementation', implementation) != implementation:
+                continue
+            try:
+                if 'M' in row and 'N' in row and 'K' in row:
+                    m, n, k = (int(row[d]) for d in ('M', 'N', 'K'))
+                elif 'size' in row:  # Read old square CSVs too.
+                    m = n = k = int(row['size'])
+                else:
+                    raise ValueError('missing M/N/K or size columns')
+            except (ValueError, TypeError) as exc:
+                raise SystemExit(f'Invalid dimensions in {path}: {exc}')
+            rows.append((m, n, k, row))
     return rows
 
 
-def create_plots(
-    results: dict[str, list[dict[str, str]]],
-    output_path: Path,
-    config_name: str,
-    show_plot: bool,
-) -> None:
-    """
-    Plot scalar and RVV GEMM on shared axes for each metric.
-
-    Color represents hardware configuration.
-    Line style represents implementation.
-    """
-    config = HARDWARE_CONFIGS[config_name]
-
-    all_sizes = sorted({
-        int(row["size"])
-        for rows in results.values()
-        for row in rows
-    })
-
-    plot_count = len(METRICS)
-    column_count = 3
-    row_count = math.ceil(plot_count / column_count)
-
-    figure, axes = plt.subplots(
-        row_count,
-        column_count,
-        figsize=(16, 12),
-    )
-
-    axes_list = axes.flatten()
-
-    for axis, metric in zip(axes_list, METRICS):
-        column = metric["column"]
-        scale = metric["scale"]
-
-        for implementation in LINE_STYLES:
-            rows = results[implementation]
-
-            sizes = [
-                int(row["size"])
-                for row in rows
-            ]
-
-            values = [
-                parse_float(
-                    row[column],
-                    column,
-                    int(row["size"]),
-                ) * scale
-                for row in rows
-            ]
-
-            axis.plot(
-                sizes,
-                values,
-                color=config["color"],
-                linestyle=LINE_STYLES[implementation],
-                marker="o",
-                linewidth=2,
-                markersize=5,
-                label=implementation.upper(),
-            )
-
-        axis.set_title(metric["title"])
-
-        axis.set_xlabel(
-            "Matrix size (N for N × N)"
-        )
-
-        axis.set_ylabel(metric["ylabel"])
-
-        axis.set_xticks(all_sizes)
-
-        axis.grid(
-            True,
-            alpha=0.3,
-        )
-
-        axis.legend()
-
-        # Keep large metric values readable.
-        if column in {
-            "instructions",
-            "operations",
-            "cycles",
-            "l1i_misses",
-            "l1d_misses",
-            "l2_misses",
-        }:
-            axis.ticklabel_format(
-                axis="y",
-                style="sci",
-                scilimits=(0, 0),
-            )
-
-    # Hide unused subplot positions.
-    for axis in axes_list[plot_count:]:
-        axis.set_visible(False)
-
-    figure.suptitle(
-        "GEMM gem5 performance comparison\n"
-        f"{config['label']}",
-        fontsize=16,
-    )
-
-    figure.tight_layout(
-        rect=(0, 0, 1, 0.94)
-    )
-
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    figure.savefig(
-        output_path,
-        dpi=300,
-        bbox_inches="tight",
-    )
-
-    print(
-        f"Plot saved to: {output_path}"
-    )
-
-    if show_plot:
-        plt.show()
-
-    plt.close(figure)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Compare scalar and RVV GEMM performance "
-            "using gem5 statistics."
-        )
-    )
-
-    parser.add_argument(
-        "--scalar",
-        type=Path,
-        default=Path(
-            "results/gemm/gemm_scalar.csv"
-        ),
-        help="Path to scalar GEMM results.",
-    )
-
-    parser.add_argument(
-        "--rvv",
-        type=Path,
-        default=Path(
-            "results/gemm/gemm_rvv.csv"
-        ),
-        help="Path to RVV GEMM results.",
-    )
-
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path(
-            "results/gemm/plots/"
-            "gemm_comparison.png"
-        ),
-        help="Path for the generated plot image.",
-    )
-
-    parser.add_argument(
-        "--config",
-        choices=HARDWARE_CONFIGS.keys(),
-        default="baseline",
-        help="Hardware configuration used for the experiment.",
-    )
-
-    parser.add_argument(
-        "--show",
-        action="store_true",
-        help="Open the plot window after saving.",
-    )
-
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--scalar', type=Path, default=PROJECT_ROOT / 'results/gemm/gemm_scalar.csv')
+    parser.add_argument('--rvv', type=Path, default=PROJECT_ROOT / 'results/gemm/gemm_rvv.csv')
+    parser.add_argument('--mode', choices=('square', 'rectangular'), default='square')
+    parser.add_argument('--n', type=int, help='Fixed N for rectangular mode')
+    parser.add_argument('--k', type=int, help='Fixed K for rectangular mode')
+    parser.add_argument('--config', choices=tuple(HARDWARE_CONFIGS), default='baseline')
+    parser.add_argument('--output', type=Path, default=None)
+    parser.add_argument('--show', action='store_true')
     args = parser.parse_args()
 
-    try:
-        results = {
-            "scalar": load_results(
-                args.scalar,
-                "scalar",
-            ),
-            "rvv": load_results(
-                args.rvv,
-                "rvv",
-            ),
-        }
+    if args.mode == 'rectangular' and (args.n is None or args.k is None or args.n <= 0 or args.k <= 0):
+        parser.error('Rectangular mode requires positive --n and --k.')
 
-        create_plots(
-            results,
-            args.output,
-            args.config,
-            args.show,
-        )
+    selected = {}
+    for implementation, path in (('scalar', args.scalar), ('rvv', args.rvv)):
+        rows = load_rows(path, implementation)
+        if args.mode == 'square':
+            filtered = [(m, row) for m, n, k, row in rows if m == n == k]
+        else:
+            filtered = [(m, row) for m, n, k, row in rows if n == args.n and k == args.k]
+        selected[implementation] = sorted(filtered, key=lambda item: item[0])
 
-    except (
-        FileNotFoundError,
-        ValueError,
-    ) as error:
-        raise SystemExit(
-            f"Plotting failed: {error}"
-        ) from error
+    if not any(selected.values()):
+        raise SystemExit('No matching GEMM experiments found in the CSV files.')
+
+    if args.output is None:
+        filename = ('gemm_comparison.png' if args.mode == 'square'
+                    else f'gemm_rectangular_N{args.n}_K{args.k}.png')
+        args.output = PROJECT_ROOT / 'results/gemm/plots' / filename
+
+    config = HARDWARE_CONFIGS[args.config]
+    fig, axes = plt.subplots(3, 3, figsize=(17, 12), constrained_layout=True)
+    for ax, (metric, title, ylabel) in zip(axes.flat, METRICS):
+        for implementation in ('scalar', 'rvv'):
+            points = []
+            for x, row in selected[implementation]:
+                value = row.get(metric, '')
+                if value is None or value.strip() == '':
+                    continue
+                try:
+                    points.append((x, float(value)))
+                except ValueError:
+                    continue
+            if points:
+                ax.plot([p[0] for p in points], [p[1] for p in points],
+                        linestyle=LINE_STYLES[implementation], marker='o',
+                        color=config['color'], label=implementation.upper())
+        ax.set_title(title)
+        ax.set_ylabel(ylabel)
+        ax.set_xlabel('Square dimension (M = N = K)' if args.mode == 'square' else 'Input rows (M)')
+        x_values = sorted({x for group in selected.values() for x, _ in group})
+        ax.set_xticks(x_values)
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+    title = ('Square GEMM scaling' if args.mode == 'square'
+             else f'Rectangular GEMM scaling (N={args.n}, K={args.k})')
+    fig.suptitle(f'{title}\n{config["label"]}', fontsize=15)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(args.output, dpi=160)
+    print(f'Plot saved to: {args.output}')
+    if args.show:
+        # Agg is a noninteractive backend; use a separate image viewer to open the file.
+        print('Open the saved PNG in your image viewer (--show does not open a window).')
+    plt.close(fig)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
