@@ -1,0 +1,12 @@
+
+{
+  "model_name": "tiny_transformer",
+  "architecture": "decoder_only_transformer",
+  "num_layers": 2,
+  "hidden_size": 128,
+  "num_attention_heads": 4,
+  "intermediate_size": 512,
+  "sequence_length": 16,
+  "batch_size": 1,
+  "dtype": "float32"
+}

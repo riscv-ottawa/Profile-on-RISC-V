@@ -10,7 +10,9 @@ from typing import Optional
 FIELDNAMES = [
     "operator",
     "implementation",
-    "size",
+    "M",
+    "N",
+    "K",
     "sim_seconds",
     "sim_ticks",
     "cycles",
@@ -114,30 +116,25 @@ def format_value(value: Optional[float]) -> str:
     return f"{value:.9f}"
 
 
-def read_existing_rows(
-    output_path: Path,
-) -> list[dict[str, str]]:
-    """Read rows already present in the unified CSV file."""
-    if not output_path.is_file():
+def read_existing_rows(output_path: Path) -> list[dict[str, str]]:
+    """Read current CSVs and migrate legacy square-GEMM rows in memory."""
+    if not output_path.is_file() or output_path.stat().st_size == 0:
         return []
 
-    if output_path.stat().st_size == 0:
-        return []
-
-    with output_path.open(
-        "r",
-        newline="",
-        encoding="utf-8",
-    ) as csv_file:
+    with output_path.open("r", newline="", encoding="utf-8") as csv_file:
         reader = csv.DictReader(csv_file)
+        columns = reader.fieldnames or []
+        old_columns = ["size" if name == "M" else name for name in FIELDNAMES
+                       if name not in ("N", "K")]
+        if columns not in (FIELDNAMES, old_columns):
+            raise SystemExit(f"Unexpected CSV columns in {output_path}: {columns}")
+        rows = list(reader)
 
-        if reader.fieldnames != FIELDNAMES:
-            raise SystemExit(
-                f"Unexpected CSV columns in {output_path}.\n"
-                "Move or delete the old CSV before using this parser."
-            )
-
-        return list(reader)
+    if columns == old_columns:
+        for row in rows:
+            size = row.pop("size")
+            row.update({"M": size, "N": size, "K": size})
+    return rows
 
 
 def write_unified_csv(
@@ -147,7 +144,7 @@ def write_unified_csv(
     """
     Add one experiment to the unified CSV.
 
-    If the same operator, implementation, and matrix size already exist,
+    If the same operator, implementation, and M/N/K already exist,
     the old row is replaced rather than duplicated.
     """
     existing_rows = read_existing_rows(output_path)
@@ -159,7 +156,8 @@ def write_unified_csv(
             existing_row.get("operator") == str(new_row["operator"])
             and existing_row.get("implementation")
             == str(new_row["implementation"])
-            and existing_row.get("size") == str(new_row["size"])
+            and all(existing_row.get(dim) == str(new_row[dim])
+                    for dim in ("M", "N", "K"))
         )
     ]
 
@@ -174,7 +172,9 @@ def write_unified_csv(
         key=lambda row: (
             row.get("operator", ""),
             row.get("implementation", ""),
-            int(row["size"]),
+            int(row["M"]),
+            int(row["N"]),
+            int(row["K"]),
         )
     )
 
@@ -199,7 +199,9 @@ def write_unified_csv(
 
 def preserve_raw_output(
     stats_path: Path,
-    size: int,
+    M: int,
+    N: int,
+    K: int,
     implementation: str,
 ) -> Path:
     """
@@ -209,7 +211,7 @@ def preserve_raw_output(
         Path("results")
         / "gemm"
         / "raw"
-        / str(size)
+        / f"{M}x{N}x{K}"
         / implementation
     )
 
@@ -253,12 +255,11 @@ def main() -> None:
         help="Path to gem5 stats.txt.",
     )
 
-    parser.add_argument(
-        "--size",
-        type=int,
-        required=True,
-        help="Square GEMM matrix dimension.",
-    )
+    shape = parser.add_mutually_exclusive_group(required=True)
+    shape.add_argument("--size", type=int, help="Legacy square GEMM size.")
+    shape.add_argument("--m", type=int, help="GEMM M dimension (requires --n and --k).")
+    parser.add_argument("--n", type=int, help="GEMM N dimension.")
+    parser.add_argument("--k", type=int, help="GEMM K dimension.")
 
     parser.add_argument(
         "--implementation",
@@ -281,10 +282,17 @@ def main() -> None:
             f"results/gemm/gemm_{args.implementation}.csv"
         )
 
-    if args.size <= 0:
-        raise SystemExit(
-            "Matrix size must be greater than zero."
-        )
+    if args.size is not None:
+        if args.n is not None or args.k is not None:
+            parser.error("--size cannot be combined with --n or --k")
+        M = N = K = args.size
+    else:
+        if args.n is None or args.k is None:
+            parser.error("--m requires both --n and --k")
+        M, N, K = args.m, args.n, args.k
+
+    if min(M, N, K) <= 0:
+        parser.error("GEMM dimensions must be positive")
 
     if not args.stats.is_file():
         raise SystemExit(
@@ -393,7 +401,8 @@ def main() -> None:
         l1d_misses is None
         and l1d_accesses is not None
         and l1d_hits is not None
-    ):l1d_misses = l1d_accesses - l1d_hits
+    ):
+        l1d_misses = l1d_accesses - l1d_hits
 
     l1d_miss_rate = safe_ratio(
         l1d_misses,
@@ -403,7 +412,9 @@ def main() -> None:
     row: dict[str, str | int] = {
         "operator": "gemm",
         "implementation": args.implementation,
-        "size": args.size,
+        "M": M,
+        "N": N,
+        "K": K,
         "sim_seconds": format_value(sim_seconds),
         "sim_ticks": format_value(sim_ticks),
         "cycles": format_value(cycles),
@@ -427,7 +438,7 @@ def main() -> None:
 
     raw_result_dir = preserve_raw_output(
         args.stats,
-        args.size,
+        M, N, K,
         args.implementation,
     )
 
@@ -438,7 +449,7 @@ def main() -> None:
         f"Raw gem5 output saved to: {raw_result_dir}"
     )
     print(
-        f"Recorded GEMM size: {args.size} x {args.size}"
+        f"Recorded GEMM shape: {M} x {N} x {K}"
     )
 
 
