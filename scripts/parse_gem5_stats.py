@@ -262,6 +262,7 @@ def main() -> None:
 
     parser.add_argument(
         "--implementation",
+        choices=["scalar", "rvv"],
         default="scalar",
         help="Kernel implementation name.",
     )
@@ -269,11 +270,16 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("results/gemm/gemm_scalar.csv"),
-        help="Path to the unified output CSV.",
+        default=None,
+        help="Optional custom CSV output path.",
     )
 
     args = parser.parse_args()
+
+    if args.output is None:
+        args.output = Path(
+            f"results/gemm/gemm_{args.implementation}.csv"
+        )
 
     if args.size <= 0:
         raise SystemExit(

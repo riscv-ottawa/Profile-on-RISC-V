@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 
 import argparse
@@ -11,7 +12,7 @@ import matplotlib.pyplot as plt
 METRICS = [
     {
         "column": "sim_seconds",
-        "title": "Simulation time",
+        "title": "Simulated execution time",
         "ylabel": "Time (seconds)",
         "scale": 1.0,
     },
@@ -66,13 +67,30 @@ METRICS = [
 ]
 
 
+# Color represents the simulated hardware configuration.
+# Additional configurations can be added here later.
+HARDWARE_CONFIGS = {
+    "baseline": {
+        "label": "1 core, 32 KiB L1D, 256 KiB L2",
+        "color": "tab:blue",
+    },
+}
+
+
+# Line style represents the GEMM implementation.
+LINE_STYLES = {
+    "scalar": ":",
+    "rvv": "-",
+}
+
+
 def parse_float(
     value: str,
     column: str,
     size: int,
 ) -> float:
     """
-    Convert one CSV value to float and provide a useful error if missing.
+    Convert a CSV value to float and report missing or invalid data.
     """
     if value is None or value.strip() == "":
         raise ValueError(
@@ -93,7 +111,7 @@ def load_results(
     implementation: str,
 ) -> list[dict[str, str]]:
     """
-    Read and sort rows for one GEMM implementation.
+    Read and sort GEMM results for one implementation.
     """
     if not csv_path.is_file():
         raise FileNotFoundError(
@@ -141,15 +159,15 @@ def load_results(
             for row in reader
             if (
                 row.get("operator") == "gemm"
-                and row.get("implementation")
-                == implementation
+                and row.get("implementation") == implementation
             )
         ]
 
     if not rows:
         raise ValueError(
             "No matching GEMM rows were found for "
-            f"implementation '{implementation}'."
+            f"implementation '{implementation}' "
+            f"in {csv_path}."
         )
 
     try:
@@ -165,24 +183,28 @@ def load_results(
 
 
 def create_plots(
-    rows: list[dict[str, str]],
+    results: dict[str, list[dict[str, str]]],
     output_path: Path,
-    implementation: str,
+    config_name: str,
     show_plot: bool,
 ) -> None:
     """
-    Create one figure containing a separate subplot for each metric.
+    Plot scalar and RVV GEMM on shared axes for each metric.
+
+    Color represents hardware configuration.
+    Line style represents implementation.
     """
-    sizes = [
+    config = HARDWARE_CONFIGS[config_name]
+
+    all_sizes = sorted({
         int(row["size"])
+        for rows in results.values()
         for row in rows
-    ]
+    })
 
     plot_count = len(METRICS)
     column_count = 3
-    row_count = math.ceil(
-        plot_count / column_count
-    )
+    row_count = math.ceil(plot_count / column_count)
 
     figure, axes = plt.subplots(
         row_count,
@@ -192,45 +214,56 @@ def create_plots(
 
     axes_list = axes.flatten()
 
-    for axis, metric in zip(
-        axes_list,
-        METRICS,
-    ):
+    for axis, metric in zip(axes_list, METRICS):
         column = metric["column"]
         scale = metric["scale"]
 
-        values = [
-            parse_float(
-                row[column],
-                column,
-                int(row["size"]),
-            ) * scale
-            for row in rows
-        ]
+        for implementation in LINE_STYLES:
+            rows = results[implementation]
 
-        axis.plot(
-            sizes,
-            values,
-            marker="o",
-        )
+            sizes = [
+                int(row["size"])
+                for row in rows
+            ]
 
-        axis.set_title(
-            metric["title"]
-        )
+            values = [
+                parse_float(
+                    row[column],
+                    column,
+                    int(row["size"]),
+                ) * scale
+                for row in rows
+            ]
+
+            axis.plot(
+                sizes,
+                values,
+                color=config["color"],
+                linestyle=LINE_STYLES[implementation],
+                marker="o",
+                linewidth=2,
+                markersize=5,
+                label=implementation.upper(),
+            )
+
+        axis.set_title(metric["title"])
+
         axis.set_xlabel(
             "Matrix size (N for N × N)"
         )
-        axis.set_ylabel(
-            metric["ylabel"]
-        )
 
-        axis.set_xticks(sizes)
+        axis.set_ylabel(metric["ylabel"])
+
+        axis.set_xticks(all_sizes)
+
         axis.grid(
             True,
             alpha=0.3,
         )
 
-        # Scientific notation helps keep large counters readable.
+        axis.legend()
+
+        # Keep large metric values readable.
         if column in {
             "instructions",
             "operations",
@@ -245,17 +278,18 @@ def create_plots(
                 scilimits=(0, 0),
             )
 
-    # Hide any unused subplot positions.
+    # Hide unused subplot positions.
     for axis in axes_list[plot_count:]:
         axis.set_visible(False)
 
     figure.suptitle(
-        f"Scalar GEMM gem5 metrics — {implementation}",
+        "GEMM gem5 performance comparison\n"
+        f"{config['label']}",
         fontsize=16,
     )
 
     figure.tight_layout(
-        rect=(0, 0, 1, 0.96)
+        rect=(0, 0, 1, 0.94)
     )
 
     output_path.parent.mkdir(
@@ -282,16 +316,27 @@ def create_plots(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Create a multi-panel figure from the unified "
-            "GEMM gem5 results CSV."
+            "Compare scalar and RVV GEMM performance "
+            "using gem5 statistics."
         )
     )
 
     parser.add_argument(
-        "--input",
+        "--scalar",
         type=Path,
-        default=Path("results/gemm/gemm_scalar.csv"),
-        help="Path to the unified GEMM CSV.",
+        default=Path(
+            "results/gemm/gemm_scalar.csv"
+        ),
+        help="Path to scalar GEMM results.",
+    )
+
+    parser.add_argument(
+        "--rvv",
+        type=Path,
+        default=Path(
+            "results/gemm/gemm_rvv.csv"
+        ),
+        help="Path to RVV GEMM results.",
     )
 
     parser.add_argument(
@@ -299,35 +344,42 @@ def main() -> None:
         type=Path,
         default=Path(
             "results/gemm/plots/"
-            "gemm_scalar_metrics.png"
+            "gemm_comparison.png"
         ),
         help="Path for the generated plot image.",
     )
 
     parser.add_argument(
-        "--implementation",
-        default="scalar",
-        help="Implementation to plot.",
+        "--config",
+        choices=HARDWARE_CONFIGS.keys(),
+        default="baseline",
+        help="Hardware configuration used for the experiment.",
     )
 
     parser.add_argument(
         "--show",
         action="store_true",
-        help="Open an interactive plot window after saving.",
+        help="Open the plot window after saving.",
     )
 
     args = parser.parse_args()
 
     try:
-        rows = load_results(
-            args.input,
-            args.implementation,
-        )
+        results = {
+            "scalar": load_results(
+                args.scalar,
+                "scalar",
+            ),
+            "rvv": load_results(
+                args.rvv,
+                "rvv",
+            ),
+        }
 
         create_plots(
-            rows,
+            results,
             args.output,
-            args.implementation,
+            args.config,
             args.show,
         )
 
