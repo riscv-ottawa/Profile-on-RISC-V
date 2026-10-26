@@ -25,8 +25,8 @@ def handle_roi_end():
     m5.stats.dump()
     yield True
 
-size=sys.argv[1]
-
+kernel = sys.argv[1]
+size = sys.argv[2]
 
 processor = SimpleProcessor(
     cpu_type=CPUTypes.TIMING,
@@ -53,12 +53,12 @@ board = SimpleBoard(
 )
 
 binary = BinaryResource(
-    local_path="build/gemm_scalar_riscv",
+    local_path="build/gemm_riscv",
 )
 
 board.set_se_binary_workload(
     binary=binary,
-    arguments=[size],
+    arguments=[kernel, size],
 )
 
 simulator = Simulator(
